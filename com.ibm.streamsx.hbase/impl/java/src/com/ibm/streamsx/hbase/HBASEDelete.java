@@ -10,6 +10,7 @@ import java.util.Set;
 
 import org.apache.hadoop.hbase.client.Delete;
 import org.apache.hadoop.hbase.client.HTableInterface;
+import org.apache.hadoop.hbase.client.Table;
 import org.apache.log4j.Logger;
 
 import com.ibm.streams.operator.OperatorContext;
@@ -178,7 +179,7 @@ public class HBASEDelete extends HBASEPutDelete {
 	@Override
 	public void process(StreamingInput<Tuple> stream, Tuple tuple)
 			throws Exception {
-		HTableInterface myTable = connection.getTable(tableNameBytes);
+		Table myTable = getTableByName(tableNameBytes);
 		byte row[] = getRow(tuple);
 		Delete myDelete = new Delete(row);
 
@@ -235,7 +236,7 @@ public class HBASEDelete extends HBASEPutDelete {
 	@Override
 	protected void flushBuffer() throws IOException {
 		if (connection != null && !connection.isClosed()) {
-			HTableInterface myTable = connection.getTable(tableNameBytes);
+			Table myTable = getTableByName(tableNameBytes);
 			if (myTable != null && deleteList != null && deleteList.size() > 0) {
 				synchronized (listLock) {
 					if (deleteList != null && deleteList.size() > 0) {

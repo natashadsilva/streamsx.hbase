@@ -9,6 +9,7 @@ import java.util.List;
 
 import org.apache.hadoop.hbase.client.HTableInterface;
 import org.apache.hadoop.hbase.client.Put;
+import org.apache.hadoop.hbase.client.Table;
 import org.apache.log4j.Logger;
 
 import com.ibm.streams.operator.Attribute;
@@ -221,7 +222,8 @@ public class HBASEPut extends HBASEPutDelete {
 			// It should be impossible to get here.
 			throw new Exception("Unsupported Put type");
 		}
-		HTableInterface myTable = connection.getTable(tableNameBytes);
+		Table myTable = getTableByName(tableNameBytes);
+
 		if (checkAttr != null) {
 			Tuple checkTuple = tuple.getTuple(checkAttrIndex);
 
@@ -261,7 +263,7 @@ public class HBASEPut extends HBASEPutDelete {
 	@Override
 	protected synchronized void flushBuffer() throws IOException {
 		if (connection != null && !connection.isClosed()) {
-			HTableInterface myTable = connection.getTable(tableNameBytes);
+			Table myTable = getTableByName(tableNameBytes);
 			synchronized (listLock) {
 				if (myTable != null && putList != null && putList.size() > 0) {
 					myTable.put(putList);

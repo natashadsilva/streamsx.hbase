@@ -12,6 +12,7 @@ import java.util.Set;
 import org.apache.hadoop.hbase.client.Get;
 import org.apache.hadoop.hbase.client.HTableInterface;
 import org.apache.hadoop.hbase.client.Result;
+import org.apache.hadoop.hbase.client.Table;
 import org.apache.log4j.Logger;
 
 import com.ibm.streams.operator.Attribute;
@@ -322,7 +323,7 @@ public class HBASEGet extends HBASEOperatorWithInput {
 				myGet.addFamily(colF);
 			}
 		}
-		HTableInterface myTable = connection.getTable(tableNameBytes);
+		Table myTable = getTableByName(tableNameBytes);
 		Result r = myTable.get(myGet);
 
 		int numResults = r.size();

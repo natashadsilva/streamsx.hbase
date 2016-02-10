@@ -33,8 +33,15 @@ import com.ibm.streams.operator.StreamingInput;
 import com.ibm.streams.operator.Tuple;
 import com.ibm.streams.operator.Type.MetaType;
 import org.apache.hadoop.hbase.client.HConnectionManager;
+import org.apache.hadoop.hbase.HBaseConfiguration;
+import org.apache.hadoop.hbase.TableName;
+import org.apache.hadoop.hbase.client.Connection;
+import org.apache.hadoop.hbase.client.ConnectionFactory;
 import org.apache.hadoop.hbase.client.HConnection;
 import org.apache.hadoop.hbase.client.HTableInterface;
+import org.apache.hadoop.hbase.client.Table;
+import org.apache.hadoop.hbase.rest.client.Cluster;
+import org.apache.hadoop.hbase.rest.client.RemoteHTable;
 import org.apache.hadoop.fs.Path;
 import java.io.File;
 import java.net.URI;
@@ -47,7 +54,7 @@ import java.net.URI;
 @Libraries({"opt/downloaded/*"})
 public abstract class HBASEOperator extends AbstractOperator {
 	public static final String DOC_BLANKLINE = "\\n\\n";
-    static final String HBASE_SITE_PARAM_NAME="hbaseSite";
+	static final String HBASE_SITE_PARAM_NAME="hbaseSite";
 	public static final String consistentCutIntroducer="\\n\\n**Behavior in a consistent region**\\n\\n";
 	public static final String commonDesc="";
 	// Keep the old common description around for a little while, in case we decide to add it back into the documentation.
@@ -63,7 +70,7 @@ public abstract class HBASEOperator extends AbstractOperator {
 			"If your HBase in located on a different host than streams, then use the "+HBASE_SITE_PARAM_NAME+" parameter."+
 			"To do this, copy hbase-site.xml into your application (eg, into the etc directory) and"+
 			"point the "+HBASE_SITE_PARAM_NAME+" parameter to this location, eg "+HBASE_SITE_PARAM_NAME+": \\\"etc/hbase-site.xml\\\"";
-			
+
 
 	protected List<String> staticColumnFamilyList= null;
 	protected List<String> staticColumnQualifierList = null;
@@ -71,10 +78,13 @@ public abstract class HBASEOperator extends AbstractOperator {
 	protected Charset charset = RSTRING_CHAR_SET;
 	private String tableName = null;
 	protected byte tableNameBytes[] = null;
-        private String hbaseSite =null;
-	protected HConnection connection =null;
+	private String hbaseSite =null;
+	protected Connection connection =null;
 	private Configuration conf;
- 
+
+	protected RemoteHTable remoteTable;
+	protected KnoxClient client;
+
 	static final String TABLE_PARAM_NAME = "tableName";
 	static final String ROW_PARAM_NAME = "rowAttrName";
 	static final String STATIC_COLF_NAME = "staticColumnFamily";
@@ -82,17 +92,17 @@ public abstract class HBASEOperator extends AbstractOperator {
 	static final String CHARSET_PARAM_NAME = "charset";
 	static final String VALID_TYPE_STRING="rstring, ustring, blob, or int64";
 	static final int BYTES_IN_LONG = Long.SIZE/Byte.SIZE;
-	
-    @Parameter(name=HBASE_SITE_PARAM_NAME, optional=true,description="The hbase-site.xml file.  This is the recommended way to specify the HBASE configuration.  If not specified, then `HBASE_HOME` must be set when the operator runs, and it will use `$HBASE_SITE/conf/hbase-site.xml`")
+
+	@Parameter(name=HBASE_SITE_PARAM_NAME, optional=true,description="The hbase-site.xml file.  This is the recommended way to specify the HBASE configuration.  If not specified, then `HBASE_HOME` must be set when the operator runs, and it will use `$HBASE_SITE/conf/hbase-site.xml`")
 	public void setHbaseSite(String name) {
-	hbaseSite = name;
-    }
-	
+		hbaseSite = name;
+	}
+
 	@Parameter(name=CHARSET_PARAM_NAME, optional=true,description="Character set to be used for converting byte[] to Strings and Strings to byte[].  Defaults to UTF-8")
 	public void getCharset(String _name) {
 		charset = Charset.forName(_name);
 	}
-	
+
 	@Parameter(name=TABLE_PARAM_NAME,optional=false,description="Name of the HBASE table.  If it does not exist, the operator will throw an exception on startup")
 	public void setTableName(String _name) {
 		tableName = _name;
@@ -102,27 +112,27 @@ public abstract class HBASEOperator extends AbstractOperator {
 	public void setStaticColumnFamily(List<String> name) {
 		staticColumnFamilyList = name;
 	}
-	
+
 	@Parameter(name=STATIC_COLQ_NAME, optional = true,description="If this parameter is specified, it will be used as the columnQualifier for all tuples.  HBASEScan allows it to be specified multiple times.") 
 	public void setStaticColumnQualifier(List<String> name) {
 		staticColumnQualifierList = name;
 	}
-	
+
 	protected static String getNoCCString() {
 		return "ERROR: The following operator is not supported in a consistent region: {0}.";
 	}
-	
+
 	protected static void checkConsistentRegionSource(OperatorContextChecker checker,String operatorName) {
-	// Now we check whether we're in a consistent region.  
-	ConsistentRegionContext ccContext = checker.getOperatorContext()
-			.getOptionalContext(ConsistentRegionContext.class);
-	if (ccContext != null && ccContext.isStartOfRegion()) {
-		checker.setInvalidContext(
-				"ERROR: The following operator cannot be the start of a consistent region: {0}.",
-				new Object[]{operatorName});
+		// Now we check whether we're in a consistent region.  
+		ConsistentRegionContext ccContext = checker.getOperatorContext()
+				.getOptionalContext(ConsistentRegionContext.class);
+		if (ccContext != null && ccContext.isStartOfRegion()) {
+			checker.setInvalidContext(
+					"ERROR: The following operator cannot be the start of a consistent region: {0}.",
+					new Object[]{operatorName});
+		}
 	}
-	}
-	
+
 	/**
 	 * Function for runtime context checks.  
 	 * @param checker
@@ -131,14 +141,14 @@ public abstract class HBASEOperator extends AbstractOperator {
 	public static void runtimeHBaseOperatorChecks(OperatorContextChecker checker) {
 		OperatorContext context = checker.getOperatorContext();
 		// The hbase site must either be specified by a parameter, or we must look it up relative to an environment variable.
-		if (!context.getParameterNames().contains(HBASE_SITE_PARAM_NAME)) {
-			String hbaseHome = System.getenv("HBASE_HOME");
-			if (hbaseHome == null) {
-				checker.setInvalidContext("If "+HBASE_SITE_PARAM_NAME+" not specified, then HBASE_HOME must be set in runtime environment",new Object[0]);
-			}
-		}
+//		if (isRestCPnnection() && !context.getParameterNames().contains(HBASE_SITE_PARAM_NAME)) {
+//			String hbaseHome = System.getenv("HBASE_HOME");
+//			if (hbaseHome == null) {
+//				checker.setInvalidContext("If "+HBASE_SITE_PARAM_NAME+" not specified, then HBASE_HOME must be set in runtime environment",new Object[0]);
+//			}
+//		}
 	}
-	
+
 	/**
 	 * Helper function to check that an attribute is the right type and return the index if so.
 	 * @param schema Input schema
@@ -160,7 +170,7 @@ public abstract class HBASEOperator extends AbstractOperator {
 		}
 		return attr.getIndex();
 	}
-	
+
 	protected static boolean isValidInputType(MetaType mType) {
 		switch (mType) {
 		case USTRING:
@@ -168,20 +178,20 @@ public abstract class HBASEOperator extends AbstractOperator {
 		case INT64:
 		case BLOB:
 			return true;
-			default:
-				return false;
+		default:
+			return false;
 		}
 	}
-	
+
 	protected static void isValidInputType(OperatorContextChecker checker, MetaType mType,String attrName) {
 		if (isValidInputType(mType)) {
 			return;
 		}
 		else {
-				checker.setInvalidContext("Attribute "+attrName+" has invalid type "+mType, null);
+			checker.setInvalidContext("Attribute "+attrName+" has invalid type "+mType, null);
 		}
 	}
-	
+
 	/**
 	 * Subclasses should generally use this function to get a byte[] to send to HBASE from a tuple.
 	 * @param tuple  The tuple containing the attribute
@@ -204,14 +214,14 @@ public abstract class HBASEOperator extends AbstractOperator {
 			myBlob.getInputStream().read(toReturn,0,(int)myBlob.getLength());
 			return toReturn;
 		default:
-		throw new Exception("Cannot get bytes for objects of type "+mType);
+			throw new Exception("Cannot get bytes for objects of type "+mType);
 		}	
 	}
-	
+
 	protected int checkAndGetIndex(StreamSchema schema, String attrName) throws Exception{
 		return checkAndGetIndex(schema,attrName,true);
 	}
-	
+
 	/**
 	 * Helper function to check that an attribute is the right type and return the index if so.
 	 * We may have to eventually allow a list of types...
@@ -234,7 +244,10 @@ public abstract class HBASEOperator extends AbstractOperator {
 		}
 		return attr.getIndex();
 	}
-	
+
+	protected boolean isRestConnection() {
+		return true;
+	}
 	/**
 	 * Loads the configuration, and creates an HTable instance.  If the table doesn't not exist, or cannot be
 	 * accessed, it will throw an error.
@@ -242,40 +255,67 @@ public abstract class HBASEOperator extends AbstractOperator {
 	@Override
 	public synchronized void initialize(OperatorContext context)
 			throws Exception {
-    	// Must call super.initialize(context) to correctly setup an operator.
+		// Must call super.initialize(context) to correctly setup an operator.
 		super.initialize(context);
 		Logger.getLogger(this.getClass()).trace("Operator " + context.getName() + " initializing in PE: " + context.getPE().getPEId() + " in Job: " + context.getPE().getJobId() );
-       
-    	conf = new Configuration();
-	if (hbaseSite == null) {
-		String hbaseHome = System.getenv("HBASE_HOME");
-		File hbaseConfig = new File(hbaseHome+File.separator+"conf"+File.separator+"hbase-site.xml");
-       		conf.addResource(new Path(hbaseConfig.toURI()));
+
+		conf = new Configuration();
+		if (isRestConnection()){
+
+		}
+		else if (hbaseSite == null) {
+			//non rest api uses HBASE home
+			String hbaseHome = System.getenv("HBASE_HOME");
+			File hbaseConfig = new File(hbaseHome+File.separator+"conf"+File.separator+"hbase-site.xml");
+			conf.addResource(new Path(hbaseConfig.toURI()));
+		}
+		else if (hbaseSite != null){
+			// We need to pass the conf a Path.  Seems the safest way to do that is to create a path from a URI.
+			// We want to handle both relative and absolute paths, adn I don't want to futz around prepending
+			// file:/// to a string.
+			// First get a URI for the application directory
+			URI toolkitRoot = context.getPE().getApplicationDirectory().toURI();
+			// now, resolve the hbase site against that
+			URI hbaseSiteURI = toolkitRoot.resolve(hbaseSite);
+			// make a path out of it.
+			Path hbaseSitePath = new Path(hbaseSiteURI);
+			// add the resource.  finally.
+			conf.addResource(hbaseSitePath);
+		}
+		connection = getConnection();//HConnectionManager.createConnection(conf);
+		tableNameBytes = tableName.getBytes(charset);
+		// Just check to see if the table exists.  Might as well fail on initialize instead of process.
+		getTableFromConnection();
 	}
-	else {
-        // We need to pass the conf a Path.  Seems the safest way to do that is to create a path from a URI.
-        // We want to handle both relative and absolute paths, adn I don't want to futz around prepending
-        // file:/// to a string.
-        // First get a URI for the application directory
-	    URI toolkitRoot = context.getPE().getApplicationDirectory().toURI();
-        // now, resolve the hbase site against that
-        URI hbaseSiteURI = toolkitRoot.resolve(hbaseSite);
-        // make a path out of it.
-	    Path hbaseSitePath = new Path(hbaseSiteURI);
-        // add the resource.  finally.
-	    conf.addResource(hbaseSitePath);
+
+	private void getTableFromConnection() throws IOException, Exception {
+		if (isRestConnection()) {
+			remoteTable = new RemoteHTable(client, String.valueOf(tableNameBytes));	
+		} else {
+			Table tempTable = connection.getTable(TableName.valueOf(tableNameBytes));
+			if (null == tempTable) {
+				Logger.getLogger(this.getClass()).error("Cannot access table, failing.");
+				throw new Exception("Cannot access table.  Check configuration");
+			}
+			tempTable.close();
+		}
 	}
-	connection = HConnectionManager.createConnection(conf);
-	tableNameBytes = tableName.getBytes(charset);
-	// Just check to see if the table exists.  Might as well fail on initialize instead of process.
-	HTableInterface tempTable = connection.getTable(tableNameBytes);
-    	if (null == tempTable) {
-    		Logger.getLogger(this.getClass()).error("Cannot access table, failing.");
-    		throw new Exception("Cannot access table.  Check configuration");
-    	}
-	tempTable.close();
+
+	protected Connection getConnection() throws IOException {
+		if (isRestConnection()) {
+
+			Cluster cluster = new Cluster();
+			cluster.add("169.55.140.200", 8443); 
+			if (client == null) {
+				client = new KnoxClient(cluster);
+			}
+			return null;
+
+		} else {
+			return ConnectionFactory.createConnection(conf);
+		}
 	}
-	
+
 	/**
 	 * Subclasses should not generally use this.  The should instead create HTableInterface via 
 	 * connection.getTable(tableNameBytes).
@@ -286,23 +326,35 @@ public abstract class HBASEOperator extends AbstractOperator {
 	 * @return HTable object.
 	 * @throws IOException
 	 */
-	protected HTable getHTable() throws  IOException {
-		return new HTable(conf,tableNameBytes);
+	protected Table getTable() throws  IOException {
+		if (isRestConnection()) {
+			return remoteTable;
+		} else {
+			
+			return connection.getTable(TableName.valueOf(tableNameBytes));
+		}
 	}
-	
-	 /**
-     * Shutdown this operator.
-     * @throws Exception Operator failure, will cause the enclosing PE to terminate.
-     */
-   @Override
-   public synchronized void shutdown() throws Exception {
-        OperatorContext context = getOperatorContext();
-       Logger.getLogger(this.getClass()).trace("Operator " + context.getName() + " shutting down in PE: " + context.getPE().getPEId() + " in Job: " + context.getPE().getJobId() );
-       if (connection != null && !connection.isClosed()) {
-    	   connection.close();
-       }
-    }
-	
+
+	protected Table getTableByName(byte[] tableName) throws IOException {
+		if (isRestConnection()) {
+			return remoteTable;
+		} else {
+			return connection.getTable(TableName.valueOf(tableName));
+		}
+	}
+	/**
+	 * Shutdown this operator.
+	 * @throws Exception Operator failure, will cause the enclosing PE to terminate.
+	 */
+	@Override
+	public synchronized void shutdown() throws Exception {
+		OperatorContext context = getOperatorContext();
+		Logger.getLogger(this.getClass()).trace("Operator " + context.getName() + " shutting down in PE: " + context.getPE().getPEId() + " in Job: " + context.getPE().getJobId() );
+		if (connection != null && !connection.isClosed()) {
+			connection.close();
+		}
+	}
+
 	/**
 	 * Used in HBASEGet and HBASEScan to figure out which fields need to be looked for in the results.
 	 * @param schema the scheme that will be populated from the hbase query
@@ -316,5 +368,5 @@ public abstract class HBASEOperator extends AbstractOperator {
 		}
 		return toReturn;
 	}
-	
+
 }

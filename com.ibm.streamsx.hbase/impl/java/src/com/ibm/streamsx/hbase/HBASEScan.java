@@ -15,11 +15,12 @@ import java.util.concurrent.ConcurrentLinkedQueue;
 
 import org.apache.hadoop.hbase.HRegionInfo;
 import org.apache.hadoop.hbase.HRegionLocation;
-import org.apache.hadoop.hbase.client.HTable;
-import org.apache.hadoop.hbase.client.HTableInterface;
+import org.apache.hadoop.hbase.TableName;
+import org.apache.hadoop.hbase.client.RegionLocator;
 import org.apache.hadoop.hbase.client.Result;
 import org.apache.hadoop.hbase.client.ResultScanner;
 import org.apache.hadoop.hbase.client.Scan;
+import org.apache.hadoop.hbase.client.Table;
 import org.apache.hadoop.hbase.filter.PrefixFilter;
 import org.apache.hadoop.hbase.util.Pair;
 import org.apache.log4j.Logger;
@@ -121,7 +122,7 @@ public class HBASEScan extends HBASEOperator implements StateHandler {
 	private static class ScanRegion implements Closeable {
 
 		final ResultScanner resultScanner;
-		final HTableInterface myTable;
+		final Table myTable;
 		boolean hasMore;
 		HBASEScan operator;
 		long rowsScanned;
@@ -157,7 +158,7 @@ public class HBASEScan extends HBASEOperator implements StateHandler {
 				myScan = new Scan();
 			}
 
-			myTable = operator.connection.getTable(operator.tableNameBytes);
+			myTable = operator.getTableByName(operator.tableNameBytes);
 			// This sets any filters based on operator parameters.
 			resultScanner = operator.startScan(myTable, myScan);
 			if (resultScanner != null) {
@@ -749,8 +750,9 @@ public class HBASEScan extends HBASEOperator implements StateHandler {
 		// Need to get the start and end keys if these aren't part of the
 		// input.
 
-		HTable myTable = getHTable();
-		Pair<byte[][], byte[][]> startEndKeys = myTable.getStartEndKeys();
+		Table myTable = getTable();
+		RegionLocator regionLocator = connection.getRegionLocator(myTable.getName());
+		Pair<byte[][], byte[][]> startEndKeys = regionLocator.getStartEndKeys();
 
 		if (startBytes == null) {
 			startBytes = startEndKeys.getFirst()[0];
@@ -766,8 +768,16 @@ public class HBASEScan extends HBASEOperator implements StateHandler {
 				+ printBytes(endBytes));
 
 		// Get a list of regions. We assume the list is always the same.
-		List<HRegionLocation> regionList = myTable.getRegionsInRange(
-				startBytes, endBytes);
+		List<HRegionLocation> regionList = regionLocator.getAllRegionLocations();//.getRegionsInRange(
+//				//startBytes, endBytes);
+//		List<HRegionLocation> regionList = new ArrayList<HRegionLocation>();
+//		for (HRegionLocation r : tmpRegionList) {
+//			if (r.getRegionInfo().containsRange(startBytes, endBytes)){
+//				regionList.add(r);
+//			}
+//		}
+	//	System.out.println("Initial length " + tmpRegionList.size() + "  final: " + regionList.size());
+		//logger.debug("Initial length " + tmpRegionList.size() + "  final: " + regionList.size());
 		myTable.close();
 		// Check that the combinatin of channel and maxChannels makes sense
 		assert ((channel == -1 && maxChannels == 0) || // it's the default
@@ -905,7 +915,7 @@ public class HBASEScan extends HBASEOperator implements StateHandler {
 			throw new Exception("Internal error.  Unknown input mode "
 					+ inputMode);
 		}
-		HTableInterface myTable = connection.getTable(tableNameBytes);
+		Table myTable = connection.getTable(TableName.valueOf(tableNameBytes));
 		ResultScanner resultScanner = startScan(myTable, myScan);
 		submitResults(tuple, resultScanner, (long) -1);
 		myTable.close();
@@ -924,7 +934,7 @@ public class HBASEScan extends HBASEOperator implements StateHandler {
 	 *            The scan. The start and the end should be set.
 	 * @returns a result scanner.
 	 */
-	private ResultScanner startScan(HTableInterface myTable, Scan myScan)
+	private ResultScanner startScan(Table myTable, Scan myScan)
 			throws IOException {
 		// Set scan attributes
 		if (maxVersions == 0) {
